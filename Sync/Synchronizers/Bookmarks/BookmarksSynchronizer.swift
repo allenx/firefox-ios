@@ -178,9 +178,18 @@ class MergeApplier {
             return deferMaybe(SyncStatus.Completed)
         }
 
-        return self.merger.merge()
-          >>== self.applyResult
-           >>> always(SyncStatus.Completed)
+        return self.merger.merge().bind { result in
+            guard let mergeResult = result.successValue else {
+                switch result.failureValue! {
+                case is BookmarksMergeConsistencyError:
+                    return deferMaybe(SyncStatus.NotStarted(.MergeInconsistent))
+                default:
+                    return deferMaybe(SyncStatus.NotStarted(.Unknown))
+                }
+            }
+
+            return self.applyResult(mergeResult) >>> always(SyncStatus.Completed)
+        }
     }
 }
 
@@ -361,10 +370,14 @@ class ThreeWayBookmarksStorageMerger: BookmarksStorageMerger {
                     return self.applyLocalDirectlyToMirror()
                 case (false, true):
                     // No outgoing changes. Unilaterally apply remote changes if they're consistent.
-                    return self.buffer.validate() >>> self.applyIncomingDirectlyToMirror
+                    return self.buffer.validate().bind { result in
+                        result.isSuccess ? self.applyIncomingDirectlyToMirror() : deferMaybe(BookmarksMergeConsistencyError())
+                    }
                 default:
                     // Changes on both sides. Merge.
-                    return self.buffer.validate() >>> self.threeWayMerge
+                    return self.buffer.validate().bind { result in
+                        result.isSuccess ? self.threeWayMerge() : deferMaybe(BookmarksMergeConsistencyError())
+                    }
                 }
             }
         }
